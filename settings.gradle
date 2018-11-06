@@ -1,0 +1,19 @@
+/*
+ * Copyright 2018 LinkedIn Corporation. All rights reserved. Licensed under the BSD-2 Clause license.
+ * See LICENSE in the project root for license information.
+ */
+
+rootProject.name = 'migz'
+
+def modules = ['migz', 'mzip', 'munzip'] /* the name of the modules to use */
+
+modules.each { module ->
+  if (!file(module).directory) {
+    throw new GradleException("Module '$module' specified in the settings.gradle file must be a valid directory in the root project.")
+  }
+  file(module).eachDir { submodule ->
+    if (!submodule.name.startsWith('.')) {
+      include "${module}:${submodule.name}"
+    }
+  }
+}

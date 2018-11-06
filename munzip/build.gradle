@@ -1,0 +1,27 @@
+/*
+ * Copyright 2018 LinkedIn Corporation. All rights reserved. Licensed under the BSD-2 Clause license.
+ * See LICENSE in the project root for license information.
+ */
+
+plugins {
+  id 'com.github.johnrengelman.shadow' version '2.0.1'
+}
+
+repositories {
+  mavenCentral()
+}
+
+apply plugin: 'idea'
+apply plugin: 'java'
+apply plugin: 'application'
+
+mainClassName = 'com.linkedin.migz.MUnzip'
+
+artifacts {
+  archives shadowJar
+}
+
+dependencies {
+    compile project(':migz')
+    testCompile 'junit:junit:4.12'
+}

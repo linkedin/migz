@@ -1,0 +1,90 @@
+/*
+ * Copyright 2018 LinkedIn Corporation. All rights reserved. Licensed under the BSD-2 Clause license.
+ * See LICENSE in the project root for license information.
+ */
+
+apply plugin: 'idea'
+apply plugin: 'java-library'
+
+apply plugin: 'maven'
+apply plugin: 'signing'
+
+archivesBaseName = "migz"
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    compile "com.concurrentli:concurrentli:1.2.0"
+    testCompile "junit:junit:4.12"
+}
+
+jar {
+    manifest {
+        attributes('Copyright': 'Copyright 2018 LinkedIn Corporation. All rights reserved.',
+            'License': 'Licensed under the BSD-2 Clause license.  See LICENSE in the project root for license information.')
+    }
+}
+
+task javadocJar(type: Jar) {
+    classifier = 'javadoc'
+    from javadoc
+}
+
+task sourcesJar(type: Jar) {
+    classifier = 'sources'
+    from sourceSets.main.allSource
+}
+
+artifacts {
+    archives javadocJar, sourcesJar
+}
+
+signing {
+    sign configurations.archives
+}
+
+uploadArchives {
+    repositories {
+        mavenDeployer {
+            beforeDeployment { MavenDeployment deployment -> signing.signPom(deployment) }
+
+            repository(url: "https://oss.sonatype.org/service/local/staging/deploy/maven2/") {
+                authentication(userName: ossrhUsername, password: ossrhPassword)
+            }
+
+            snapshotRepository(url: "https://oss.sonatype.org/content/repositories/snapshots/") {
+                authentication(userName: ossrhUsername, password: ossrhPassword)
+            }
+
+            pom.project {
+                name 'MiGz'
+                packaging 'jar'
+
+                description 'Fast, multithreaded, gzip-compatible compression and decompression library for Java'
+                url 'https://github.com/linkedin/migz'
+
+                scm {
+                    connection 'scm:git@github.com:linkedin/migz.git'
+                    developerConnection 'scm:git@github.com:linkedin/migz.git'
+                    url 'scm:git@github.com:linkedin/migz.git'
+                }
+
+                licenses {
+                    license {
+                        name 'BSD 2-Clause License'
+                        url 'https://opensource.org/licenses/BSD-2-Clause'
+                    }
+                }
+
+                developers {
+                    developer {
+                        id 'jeffpasternack'
+                        name 'Jeff Pasternack'
+                    }
+                }
+            }
+        }
+    }
+}

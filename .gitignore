@@ -1,0 +1,15 @@
+.project
+.settings
+.classpath
+.gradle
+.idea
+.DS_Store
+*.iml
+*.ipr
+*.iws
+/build
+*/build
+out/
+*/bin/
+/bin/
+/ligradle

@@ -1,0 +1,9 @@
+Copyright 2018 LinkedIn Corporation
+All Rights Reserved.
+
+Licensed under the BSD 2-Clause License (the "License").
+See LICENSE in the project root for license information.
+
+MiGz depends on two libraries:
+(1) JUnit, licensed under the Eclipse Public License 1.0
+(2) Concurrentli, licensed under the BSD 2-Clause License
