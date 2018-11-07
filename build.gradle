@@ -7,7 +7,7 @@ apply plugin: 'idea'
 
 subprojects {
   plugins.withType(JavaPlugin) {
-    group = 'com.linkedin'
+    group = 'com.linkedin.migz'
     version = '1.0.0'
     archivesBaseName = "migz"
   }
