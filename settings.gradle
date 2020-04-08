@@ -5,15 +5,6 @@
 
 rootProject.name = 'migz'
 
-def modules = ['migz', 'mzip', 'munzip'] /* the name of the modules to use */
-
-modules.each { module ->
-  if (!file(module).directory) {
-    throw new GradleException("Module '$module' specified in the settings.gradle file must be a valid directory in the root project.")
-  }
-  file(module).eachDir { submodule ->
-    if (!submodule.name.startsWith('.')) {
-      include "${module}:${submodule.name}"
-    }
-  }
-}
+include 'migz'
+include 'mzip'
+include 'munzip'

@@ -96,5 +96,5 @@ the default thread count as "future proofing".
 
 ## Building MiGz
 To build the MiGz Java library, use the command `gradle :migz:build`.
-To build the munzip tool, use the command `grade :munzip:build`.
+To build the munzip tool, use the command `gradle :munzip:build`.
 To build the mzip tool, use the command `gradle :mzip:build`.

@@ -3,4 +3,10 @@
  * See LICENSE in the project root for license information.
  */
 
+apply plugin: 'java'
 apply plugin: 'idea'
+
+java {
+  sourceCompatibility = JavaVersion.VERSION_1_8
+  targetCompatibility = JavaVersion.VERSION_1_8
+}

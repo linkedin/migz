@@ -19,6 +19,32 @@ import static org.junit.Assert.*;
 
 
 public class MiGzTest {
+  /**
+   * Tests the compression of (almost always) incompressible pseudorandom data.  This is useful for exercising the edge
+   * case wherein DEFLATE stores data in uncompressed blocks that are larger than the original data.
+   *
+   * @throws IOException nominally, but not in practice since in-memory streams are used
+   */
+  @Test
+  public void testRandomDataCompression() throws IOException {
+    Random r = new Random(1);
+    byte[][] buffers = new byte[][]{new byte[100], new byte[1000], new byte[10000], new byte[100000]};
+
+    for (int i = 0; i < 1000; i++) {
+      try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
+          MiGzOutputStream mzos = new MiGzOutputStream(baos, MiGzOutputStream.DEFAULT_THREAD_COUNT, 50 * 1024)) {
+        mzos.setCompressionLevel(3);
+
+        for (int j = 0; j < 10; j++) {
+          for (byte[] buffer : buffers) {
+            r.nextBytes(buffer);
+            mzos.write(buffer);
+          }
+        }
+      }
+    }
+  }
+
   @Test
   public void testOutput() throws IOException {
     ByteArrayOutputStream baos = new ByteArrayOutputStream();

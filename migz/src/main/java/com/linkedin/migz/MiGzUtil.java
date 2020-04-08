@@ -58,10 +58,21 @@ class MiGzUtil {
   public static final int DEFAULT_BLOCK_SIZE = 512 * 1024;
 
   public static int maxCompressedSize(int uncompressed) {
-    final int deflateBlockSize = 32 * 1024;
+    // zlib (which backs all JVM implementations of Java's Deflate class that we are aware of) will use a memLevel of 8
+    // for the DEFLATE algorithm by default, which translates to an uncompressable block size of 2^14 - 1 (~16KB).
+    // However, the minimum memLevel permitted by zlib is 1, which translates to a block size of 2^7 - 1 (127 bytes).
+    // Because we have no portable way to detect the memLevel that will be used in the current JVM with absolute
+    // certainty, we assume the worst-case block size of 127 (even though in practice it is a *virtual* certainty it
+    // will be 16,383).  This results in slightly higher than ideal memory consumption (by about 4%).
+    //
+    // We note that, in principle, nothing stops another, non-zlib DEFLATE implementation from allowing an even smaller
+    // block size; however, no plausible/sane Deflate class would ever use such a small size.
+    final int deflateBlockSize = 127; // absolute minimum, worst-case DEFLATE block size allowed by zlib
 
-    // according to the relevant RFC, Deflate should add no more than 5 bytes per 32K block
-    return uncompressed + ((uncompressed + deflateBlockSize - 1) / deflateBlockSize) * 5;
+    // According to the relevant RFC, Deflate should add no more than 5 bytes per DEFLATE block;
+    // we add one additional byte to avoid a potential issue where Deflate does not properly report a "finished" block
+    // if the size of the deflated block is exactly the size of the available buffer.
+    return uncompressed + ((uncompressed + deflateBlockSize - 1) / deflateBlockSize) * 5 + 1;
   }
 
   public static void checkException(AtomicReference<RuntimeException> exception) throws IOException {
