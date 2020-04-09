@@ -4,7 +4,7 @@
  */
 
 plugins {
-  id 'com.github.johnrengelman.shadow' version '2.0.1'
+  id 'com.github.johnrengelman.shadow' version '5.2.0'
 }
 
 repositories {
@@ -15,12 +15,14 @@ apply plugin: 'idea'
 apply plugin: 'java'
 apply plugin: 'application'
 
+application {
+  mainClassName = 'com.linkedin.migz.MZip'
+}
+
 java {
   sourceCompatibility = JavaVersion.VERSION_1_8
   targetCompatibility = JavaVersion.VERSION_1_8
 }
-
-mainClassName = 'com.linkedin.migz.MZip'
 
 artifacts {
   archives shadowJar
