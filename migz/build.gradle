@@ -11,7 +11,7 @@ apply plugin: 'signing'
 
 archivesBaseName = "migz"
 group = 'com.linkedin.migz'
-version = '1.0.1'
+version = '1.0.4'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_1_8
