@@ -5,13 +5,21 @@
 
 package com.linkedin.migz;
 
-import com.concurrentli.Interrupted;
+import com.concurrentli.ManagedDequeueBlocker;
+import com.concurrentli.ManagedStreamReadBlocker;
 import com.concurrentli.SequentialQueue;
 import com.concurrentli.UncheckedInterruptedException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
-import java.util.concurrent.ArrayBlockingQueue;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.ForkJoinTask;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RecursiveAction;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.zip.DataFormatException;
@@ -45,7 +53,7 @@ public class MiGzInputStream extends InputStream {
    * (2) Each thread decompresses its block into an output buffer taken from the buffer pool.
    * (3) The output buffer is placed into the outputBufferQueue for the client to read(...)
    */
-  public static final int DEFAULT_THREAD_COUNT = Runtime.getRuntime().availableProcessors();
+  private static final byte[] EMPTY_BYTE_ARRAY = new byte[0];
 
   private long _currentBlock = 0; // the current block being read from the input stream
   private volatile boolean _eosCompressed = false; // have reached the end of compressed data?
@@ -54,27 +62,52 @@ public class MiGzInputStream extends InputStream {
   private MiGzBuffer _activeDecompressedBuffer = null; // current buffer being read(...) or readBuffer()'ed
   private int _activeDecompressedBufferOffset = 0; // offset of the next byte to be read within that buffer
 
-  private final ArrayBlockingQueue<byte[]> _decompressedBufferPool; // pool of buffers for decompressed bytes
+  private final List<TaskState> _taskStatePopulation; // needed for closing
+  private final LinkedBlockingQueue<TaskState> _taskStatePool; // pool of buffers for decompressed bytes
+  private final LinkedBlockingQueue<byte[]> _decompressedBufferPool; // pool of buffers for decompressed bytes
   // sequential queue of decompressed data ready to be read by the client via readBuffer() or read(...):
   private final SequentialQueue<MiGzBuffer> _decompressedBufferQueue;
-
   // number of threads used to write the original MiGzipped file
-  private final int _threads;
-
   private final InputStream _inputStream; // source of compressed bytes
-
-  private final Thread[] _threadPool; // decompressor threads
+  private final ConcurrentHashMap<DecompressTask, Boolean> _activeTasks;
+  private final boolean _ownsThreadPool; // determines whether the thread pool should be terminated on close()
+  private final ForkJoinPool _threadPool; // decompressor thread pool
+  //private final ForkJoinTask[] _tasks; // keep track of these so we can cancel them later if needed
   private final byte[] _minibuff = new byte[1]; // used for single-byte read()s
 
   /**
    * Creates a new MiGzInputStream that will read MiGz-compressed bytes from the specified underlying
-   * inputStream using the default number of threads.
+   * inputStream using the default number of threads.  Worker tasks will execute on the current {@link ForkJoinPool}
+   * returned by {@link ForkJoinTask#getPool()} if applicable, the {@link ForkJoinPool#commonPool()} otherwise,
+   * with a maximum number of concurrent workers equal to the target parallelism of the pool.
    *
    * @param inputStream the stream from which compressed bytes will be read
    * @throws UncheckedIOException if a problem occurs reading the block size header
    */
   public MiGzInputStream(InputStream inputStream) {
-    this(inputStream, DEFAULT_THREAD_COUNT);
+    this(inputStream, ForkJoinTask.inForkJoinPool() ?  ForkJoinTask.getPool() : ForkJoinPool.commonPool());
+  }
+
+  /**
+   * Creates a new MiGzInputStream that will read MiGz-compressed bytes from the specified underlying
+   * inputStream.  The number of worker threads will be equal to the parallelism of the pool.
+   *
+   * @param inputStream the stream from which compressed bytes will be read
+   * @param threadPool the thread pool on which worker threads will be scheduled
+   */
+  public MiGzInputStream(InputStream inputStream, ForkJoinPool threadPool) {
+    this(inputStream, threadPool, threadPool.getParallelism());
+  }
+
+  /**
+   * Creates a new MiGzInputStream that will read MiGz-compressed bytes from the specified underlying
+   * inputStream.  A <strong>new</strong> ForkJoinPool will be created to accommodate the specified number of threads.
+   *
+   * @param inputStream the stream from which compressed bytes will be read
+   * @param threadCount the maximum number of threads to use for decompression
+   */
+  public MiGzInputStream(InputStream inputStream, int threadCount) {
+    this(inputStream, new ForkJoinPool(threadCount), threadCount, true);
   }
 
   /**
@@ -82,25 +115,41 @@ public class MiGzInputStream extends InputStream {
    * inputStream.
    *
    * @param inputStream the stream from which compressed bytes will be read
-   * @param threads the number of threads to use for decompression
+   * @param threadPool the thread pool on which worker threads will be scheduled
+   * @param threadCount the maximum number of threads to use for decompression; limited by the number of threads in the
+   *                provided {@code threadPool}
    */
-  public MiGzInputStream(InputStream inputStream, int threads) {
-    _inputStream = inputStream;
-    _threads = threads;
-    _threadPool = new Thread[_threads];
-    int outputBufferCount = 2 * threads;
+  public MiGzInputStream(InputStream inputStream, ForkJoinPool threadPool, int threadCount) {
+    this(inputStream, threadPool, threadCount, false);
+  }
 
-    _decompressedBufferPool =
-        new ArrayBlockingQueue<byte[]>(outputBufferCount, false, IntStream.range(0, outputBufferCount)
-          .mapToObj(i -> new byte[MiGzUtil.DEFAULT_BLOCK_SIZE])
-          .collect(Collectors.toList()));
+  /**
+   * Creates a new MiGzInputStream that will read MiGz-compressed bytes from the specified underlying
+   * inputStream.
+   *
+   * @param inputStream the stream from which compressed bytes will be read
+   * @param threadPool the thread pool on which worker threads will be scheduled
+   * @param threadCount the maximum number of threads to use for decompression; limited by the number of threads in the
+   *                provided {@code threadPool}
+   * @param ownsThreadPool whether this instance "owns" the thread pool and should shut it down when close() is called
+   */
+  private MiGzInputStream(InputStream inputStream, ForkJoinPool threadPool, int threadCount, boolean ownsThreadPool) {
+    _inputStream = inputStream;
+    _threadPool = threadPool;
+    _ownsThreadPool = ownsThreadPool;
+    int outputBufferCount = 2 * threadCount;
+
+    _activeTasks = new ConcurrentHashMap<>(threadCount);
+    _taskStatePopulation = IntStream.range(0, threadCount).mapToObj(i -> new TaskState()).collect(Collectors.toList());
+    _taskStatePool = new LinkedBlockingQueue<>(_taskStatePopulation);
+
+    _decompressedBufferPool = new LinkedBlockingQueue<>(Collections.nCopies(outputBufferCount, EMPTY_BYTE_ARRAY));
+
+    // making the queue larger than the number of output buffers guarantees that an enqueue call on SequentialQueue will
+    // not block, since the indices written to are assigned sequentially only after the worker thread obtains a buffer
     _decompressedBufferQueue = new SequentialQueue<>(outputBufferCount + 1);
 
-    for (int i = 0; i < _threads; i++) {
-      _threadPool[i] = new Thread(Interrupted.ignored(this::decompressorThread));
-      _threadPool[i].setDaemon(true);
-      _threadPool[i].start();
-    }
+    _threadPool.execute(new DecompressTask());
   }
 
   private void enqueueException(long blockIndex, RuntimeException e) throws InterruptedException {
@@ -108,77 +157,121 @@ public class MiGzInputStream extends InputStream {
     _decompressedBufferQueue.enqueueException(blockIndex, e); // throw an exception when this block is read(...)
   }
 
-  private void decompressorThread() throws InterruptedException {
-    Inflater inflater = new Inflater(true);
-    try {
-      decompressorThreadWithInflater(inflater);
-    } finally {
-      inflater.end();
+  private static class TaskState {
+    byte[] _buffer = new byte[MiGzUtil.maxCompressedSize(MiGzUtil.DEFAULT_BLOCK_SIZE) + MiGzUtil.GZIP_FOOTER_SIZE];
+    final byte[] _headerBuffer = new byte[MiGzUtil.GZIP_HEADER_SIZE];
+    Inflater _inflater = new Inflater(true);
+
+    void close() {
+      _inflater.end();
     }
   }
 
-  private void decompressorThreadWithInflater(final Inflater inflater)
-      throws InterruptedException {
+  private static int readFromStream(InputStream inputStream, byte[] buffer, int count) throws IOException {
+    int read;
+    int offset = 0;
+    while ((read = inputStream.read(buffer, offset, count - offset)) > 0) {
+      offset += read;
+    }
+    return offset;
+  }
 
-    byte[] buffer =
-        new byte[MiGzUtil.maxCompressedSize(MiGzUtil.DEFAULT_BLOCK_SIZE) + MiGzUtil.GZIP_FOOTER_SIZE];
+  private class DecompressTask extends RecursiveAction {
+    private Thread _executionThread;
 
-    final byte[] headerBuffer = new byte[MiGzUtil.GZIP_HEADER_SIZE];
+    @Override
+    public boolean cancel(boolean mayInterruptIfRunning) {
+      if (mayInterruptIfRunning) {
+        synchronized (this) {
+          if (_executionThread != null) {
+            _executionThread.interrupt();
+          }
+        }
+      }
+      return super.cancel(mayInterruptIfRunning);
+    }
 
-    while (true) {
+    @Override
+    protected void compute() {
+      _activeTasks.put(this, true);
+      synchronized (this) { // this won't block unless we're closing (and even then, almost certainly not...)
+        _executionThread = Thread.currentThread();
+      }
+      try {
+        try {
+          decompressorThread();
+        } finally { // clear our execution thread before handling any exceptions or clearing ourselves from activeTasks
+          synchronized (this) {
+            _executionThread = null;
+          }
+        }
+      } catch (InterruptedException e) {
+        throw new UncheckedInterruptedException(e);
+      } finally {
+        _activeTasks.remove(this);
+      }
+    }
+
+    private void decompressorThread() throws InterruptedException {
+      TaskState taskState = ManagedDequeueBlocker.dequeue(_taskStatePool);
+
+      byte[] headerBuffer = taskState._headerBuffer;
+      byte[] buffer = taskState._buffer;
+      Inflater inflater = taskState._inflater;
+
+      byte[] outputBuffer = ManagedDequeueBlocker.dequeue(_decompressedBufferPool);
+
+      // check if we should stop
+      if (_eosCompressed) {
+        return;
+      }
+
       long myBlock = -1; // need to initialize this so Java doesn't complain that an uninitialized value is read in the
-                         // catch {...} blocks, but in practice it will always be set to the correct value if/when those
-                         // blocks execute.
+      // catch {...} blocks, but in practice it will always be set to the correct value if/when those
+      // blocks execute.
       try {
         final int compressedSize;
         boolean ensureBufferCapacity = false;
 
-        // before reading the input, get a place to put the decompressed output:
-        byte[] outputBuffer = _decompressedBufferPool.take();
+        myBlock = _currentBlock++;
 
-        synchronized (_inputStream) {
-          if (_eosCompressed) {
+        // first read the header
+        int headerBufferBytesRead = ManagedStreamReadBlocker.read(_inputStream, headerBuffer, headerBuffer.length);
+
+        // eos or partially missing header?
+        if (headerBufferBytesRead < headerBuffer.length) {
+          _eosCompressed = true;
+          _decompressedBufferQueue.enqueue(myBlock, null); // never blocks
+
+          if (headerBufferBytesRead == 0) {
+            // nothing more to read
             return;
+          } else {
+            // something more to read, but it's not long enough to be a valid header
+            throw new IOException("File is not MiGz formatted");
           }
-
-          myBlock = _currentBlock++;
-
-          // first read the header
-          int headerBufferBytesRead = readFromInputStream(headerBuffer, headerBuffer.length);
-
-          // eos or partially missing header?
-          if (headerBufferBytesRead < headerBuffer.length) {
-            _eosCompressed = true;
-            _decompressedBufferQueue.enqueue(myBlock, null);
-
-            if (headerBufferBytesRead == 0) {
-              // nothing more to read
-              return;
-            } else {
-              // something more to read, but it's not long enough to be a valid header
-              throw new IOException("File is not MiGz formatted");
-            }
-          }
-
-          compressedSize = getIntFromLSBByteArray(headerBuffer, headerBuffer.length - 4);
-          int toRead = compressedSize + MiGzUtil.GZIP_FOOTER_SIZE;
-
-          // get new, bigger buffer if necessary
-          if (buffer.length < toRead) {
-            buffer = new byte[toRead];
-            ensureBufferCapacity = true;
-          }
-
-          readFromInputStream(buffer, toRead);
         }
+
+        compressedSize = getIntFromLSBByteArray(headerBuffer, headerBuffer.length - 4);
+        int toRead = compressedSize + MiGzUtil.GZIP_FOOTER_SIZE;
+
+        // get new, bigger buffer if necessary
+        if (buffer.length < toRead) {
+          buffer = new byte[toRead];
+          ensureBufferCapacity = true;
+        }
+
+        ManagedStreamReadBlocker.read(_inputStream, buffer, toRead);
+
+        // note that forking synchronizes our child thread with our current state
+        new DecompressTask().fork(); // we've finished using exclusive resources, let someone else run
 
         int putativeInflatedSize = getIntFromLSBByteArray(buffer, compressedSize + 4);
 
         // check if the compressed buffer is large enough for all future inputs with this inflated block size;
         // this avoids re-allocating the buffer multiple times above, though this never happens when the default block
         // size is used:
-        if (ensureBufferCapacity
-            && buffer.length < MiGzUtil.maxCompressedSize(putativeInflatedSize) + MiGzUtil.GZIP_FOOTER_SIZE) {
+        if (ensureBufferCapacity && buffer.length < MiGzUtil.maxCompressedSize(putativeInflatedSize) + MiGzUtil.GZIP_FOOTER_SIZE) {
           buffer = new byte[MiGzUtil.maxCompressedSize(putativeInflatedSize) + MiGzUtil.GZIP_FOOTER_SIZE];
         }
 
@@ -194,13 +287,13 @@ public class MiGzInputStream extends InputStream {
         // This is extremely basic error checking: just check the decompressed size;
         // at greater CPU cost we could also check the CRC32 and the header, too
         if (uncompressedSize != putativeInflatedSize) {
-          throw new IOException("The number of bytes actually decompressed bytes does not match the number of "
-              + "uncompressed bytes recorded in the GZip record");
+          throw new IOException("The number of bytes actually decompressed bytes does not match the number of " + "uncompressed bytes recorded in the GZip record");
         } else if (!inflater.finished()) {
           throw new IOException("The decompressed size is larger than that claimed in the GZip record");
         }
 
-        _decompressedBufferQueue.enqueue(myBlock, new MiGzBuffer(outputBuffer, uncompressedSize));
+        _taskStatePool.put(taskState); // return resources to pool; never blocks
+        _decompressedBufferQueue.enqueue(myBlock, new MiGzBuffer(outputBuffer, uncompressedSize)); // never blocks
       } catch (IOException e) {
         enqueueException(myBlock, new UncheckedIOException(e));
         return;
@@ -212,18 +305,6 @@ public class MiGzInputStream extends InputStream {
         return;
       }
     }
-  }
-
-  private int readFromInputStream(byte[] buffer, int length) throws IOException {
-    int read;
-    int offset = 0;
-
-    // first read the header
-    while ((read = _inputStream.read(buffer, offset, length - offset)) > 0) {
-      offset += read;
-    }
-
-    return offset;
   }
 
   private static int getIntFromLSBByteArray(byte[] source, int offset) {
@@ -249,8 +330,11 @@ public class MiGzInputStream extends InputStream {
    * the data in the byte array (the decompressed data always starts at offset 0), or null if the end of stream has been
    * reached.
    *
-   * You should avoid interleaving readBuffer() and read(...) calls, as this can severely harm performance.  Use one
-   * method or the other, not both, to read the stream.
+   * The buffer remains valid until the next call to {@link #readBuffer()} or one of the {@code read(...)} methods;
+   * after that, MiGz may modify its contents to store further decompressed data.
+   *
+   * You should avoid interleaving {@link #readBuffer()} and {@code read(...)} calls, as this can severely harm
+   * performance.  Use one method or the other, not both, to read the stream.
    *
    * @return a Buffer containing decompressed data, or null if the end of stream has been reached
    */
@@ -314,6 +398,11 @@ public class MiGzInputStream extends InputStream {
 
   @Override
   public int available() throws IOException {
+    if ((_activeDecompressedBuffer == null || _activeDecompressedBuffer.getLength() == _activeDecompressedBufferOffset)
+      && _decompressedBufferQueue.isNextAvailable()) {
+      ensureBuffer(); // shouldn't block (at least not more than trivially)
+    }
+
     if (_activeDecompressedBuffer != null) {
       return _activeDecompressedBuffer.getLength() - _activeDecompressedBufferOffset;
     }
@@ -323,9 +412,27 @@ public class MiGzInputStream extends InputStream {
 
   @Override
   public void close() throws IOException {
-    for (int i = 0; i < _threadPool.length; i++) {
-      _threadPool[i].interrupt();
+    _eosCompressed = true; // will (eventually) result in all tasks stopping
+
+    _decompressedBufferPool.offer(EMPTY_BYTE_ARRAY); { } // there might be a thread waiting on a buffer
+
+    // try to cancel/interrupt all tasks, then wait for them to finish
+    DecompressTask[] activeTasks = _activeTasks.keySet().toArray(new DecompressTask[0]);
+    Arrays.stream(activeTasks).forEach(task -> task.cancel(true));
+
+    try {
+      ForkJoinTask.invokeAll(activeTasks); // wait until our tasks have completed; may rethrow worker exceptions
+    } catch (Exception e) {
+      // do nothing--exceptions are expected here
+    } finally {
+      _inputStream.close(); // now safe to close underlying stream
+      _taskStatePopulation.forEach(TaskState::close); // release task state resources
+
+      try {
+        if (_ownsThreadPool) {
+          _threadPool.shutdown();
+        }
+      } catch (Exception ignored) { } // ignore exceptions while shutting down
     }
-    _inputStream.close();
   }
 }

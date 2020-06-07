@@ -18,7 +18,7 @@ public class MUnzip {
   private MUnzip() { }
 
   public static void main(String[] args) throws IOException {
-    int threadCount = MiGzInputStream.DEFAULT_THREAD_COUNT;
+    int threadCount = Runtime.getRuntime().availableProcessors();
 
     // used for perf testing
     boolean gzip = false;
@@ -47,14 +47,21 @@ public class MUnzip {
 
     long startTime = System.nanoTime();
 
-    InputStream mzis = gzip ? new GZIPInputStream(System.in, MiGzUtil.DEFAULT_BLOCK_SIZE)
-        : new MiGzInputStream(System.in, threadCount);
+    if (gzip) {
+      InputStream gzipIS = new GZIPInputStream(System.in, MiGzUtil.DEFAULT_BLOCK_SIZE);
+      byte[] buffer = new byte[MiGzUtil.DEFAULT_BLOCK_SIZE];
+      int readCount;
 
-    byte[] buffer = new byte[MiGzUtil.DEFAULT_BLOCK_SIZE];
-    int readCount;
+      while ((readCount = gzipIS.read(buffer)) > 0) {
+        System.out.write(buffer, 0, readCount);
+      }
+    } else {
+      MiGzInputStream mzis = new MiGzInputStream(System.in, threadCount);
+      MiGzBuffer buffer;
 
-    while ((readCount = mzis.read(buffer)) > 0) {
-      System.out.write(buffer, 0, readCount);
+      while ((buffer = mzis.readBuffer()) != null) {
+        System.out.write(buffer.getData(), 0, buffer.getLength());
+      }
     }
 
     System.out.close();

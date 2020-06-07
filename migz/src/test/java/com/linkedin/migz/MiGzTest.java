@@ -11,6 +11,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Random;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.Deflater;
 import java.util.zip.GZIPInputStream;
 import org.junit.Test;
@@ -19,6 +21,8 @@ import static org.junit.Assert.*;
 
 
 public class MiGzTest {
+  private static final int DEFAULT_THREAD_COUNT = Runtime.getRuntime().availableProcessors();
+
   /**
    * Tests the compression of (almost always) incompressible pseudorandom data.  This is useful for exercising the edge
    * case wherein DEFLATE stores data in uncompressed blocks that are larger than the original data.
@@ -32,7 +36,7 @@ public class MiGzTest {
 
     for (int i = 0; i < 1000; i++) {
       try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
-          MiGzOutputStream mzos = new MiGzOutputStream(baos, MiGzOutputStream.DEFAULT_THREAD_COUNT, 50 * 1024)) {
+          MiGzOutputStream mzos = new MiGzOutputStream(baos, DEFAULT_THREAD_COUNT, 50 * 1024)) {
         mzos.setCompressionLevel(3);
 
         for (int j = 0; j < 10; j++) {
@@ -54,7 +58,7 @@ public class MiGzTest {
     mzos.close();
 
     ByteArrayInputStream bais = new ByteArrayInputStream(baos.toByteArray());
-    MiGzInputStream mzip = new MiGzInputStream(bais, 20);
+    MiGzInputStream mzip = new MiGzInputStream(bais, new ForkJoinPool(20));
 
     for (int i = 0; i < 16; i++) {
       System.out.println(mzip.read());
@@ -91,7 +95,7 @@ public class MiGzTest {
     GZIPInputStream gzis = new GZIPInputStream(bais1);
 
     ByteArrayInputStream bais2 = new ByteArrayInputStream(baos.toByteArray());
-    MiGzInputStream mzis = new MiGzInputStream(bais2, 10);
+    MiGzInputStream mzis = new MiGzInputStream(bais2, new ForkJoinPool(10));
 
     shakestream = MiGzTest.class.getResourceAsStream("/shakespeare.tar");
 
@@ -108,6 +112,13 @@ public class MiGzTest {
       assertEquals("Error reading with MiGzInputStream on byte " + (count++), byte1, byte2);
       assertEquals("Error reading with GZipInputStream on byte " + (count++), byte1, byte3);
     } while (byte1 != -1);
+
+    MiGzInputStream mzisToClose = new MiGzInputStream(new ByteArrayInputStream(baos.toByteArray()));
+    for (int i = 0; i < 16; i++) {
+      mzisToClose.readBuffer();
+    }
+    mzisToClose.close(); // make sure this closes successfully, without hanging the test or throwing
+    assertTrue(ForkJoinPool.commonPool().awaitQuiescence(5, TimeUnit.SECONDS)); // make sure threads are idle
   }
 
   private static void copyShakestream(OutputStream target) throws IOException {

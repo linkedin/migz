@@ -16,7 +16,7 @@ public class MZip  {
   private MZip() { }
 
   public static void main(String[] args) throws IOException {
-    int threadCount = MiGzOutputStream.DEFAULT_THREAD_COUNT;
+    int threadCount = Runtime.getRuntime().availableProcessors();
     int blockSize = MiGzUtil.DEFAULT_BLOCK_SIZE;
     int compressionLevel = 9;
 

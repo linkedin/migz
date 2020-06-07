@@ -8,7 +8,7 @@ package com.linkedin.migz;
 /**
  * MiGzBuffer directly exposes MiGz's internal buffers for better performance relative to the typical stream interface.
  */
-public final class MiGzBuffer {
+public class MiGzBuffer {
   private final byte[] _data;
   private final int _length;
 

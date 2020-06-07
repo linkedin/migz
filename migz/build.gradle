@@ -11,7 +11,7 @@ apply plugin: 'signing'
 
 archivesBaseName = "migz"
 group = 'com.linkedin.migz'
-version = '1.0.4'
+version = '2.0.beta-1'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_1_8
@@ -23,7 +23,7 @@ repositories {
 }
 
 dependencies {
-    compile "com.concurrentli:concurrentli:1.2.0"
+    compile "com.concurrentli:concurrentli:1.3.2"
     testCompile "junit:junit:4.12"
 }
 
