@@ -19,6 +19,7 @@ public class MUnzip {
 
   public static void main(String[] args) throws IOException {
     int threadCount = Runtime.getRuntime().availableProcessors();
+    boolean verbose = false;
 
     // used for perf testing
     boolean gzip = false;
@@ -30,9 +31,13 @@ public class MUnzip {
       } else if (args[i].equals("-gzip")) {
         // standard gzip, for perf testing
         gzip = true;
+      } else if (args[i].equals("-v")) {
+        verbose = true;
       } else if (args[i].contains("help") || args[i].contains("?")) {
         System.out.println("Decompresses MiGz-compressed data from stdin and outputs the decompressed bytes to stdout");
         System.out.println("Optional arguments:");
+        System.out.println(
+            "\t-v : display informational messages at start and end");
         System.out.println(
             "\t-t [thread count] : sets the number of threads to use (default = 2 * number of logical cores)");
         System.out.println(
@@ -43,7 +48,9 @@ public class MUnzip {
     }
     // CHECKSTYLE:ON
 
-    System.err.println("Decompressing stdin using " + threadCount + " threads");
+    if (verbose) {
+      System.err.println("Decompressing stdin using " + threadCount + " threads");
+    }
 
     long startTime = System.nanoTime();
 
@@ -67,6 +74,8 @@ public class MUnzip {
     System.out.close();
 
     double timeInSeconds = ((double) (System.nanoTime() - startTime)) / (1000 * 1000 * 1000);
-    System.err.println("Decompression completed in " + timeInSeconds + " seconds");
+    if (verbose) {
+      System.err.println("Decompression completed in " + timeInSeconds + " seconds");
+    }
   }
 }

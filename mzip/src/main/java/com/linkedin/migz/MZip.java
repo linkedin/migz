@@ -19,6 +19,7 @@ public class MZip  {
     int threadCount = Runtime.getRuntime().availableProcessors();
     int blockSize = MiGzUtil.DEFAULT_BLOCK_SIZE;
     int compressionLevel = 9;
+    boolean verbose = false;
 
     // CHECKSTYLE:OFF
     for (int i = 0; i < args.length; i++) {
@@ -28,11 +29,15 @@ public class MZip  {
         blockSize = Integer.parseInt(args[++i]);
       } else if (args[i].startsWith("-") && args[i].length() == 2 && Character.isDigit(args[i].charAt(1))) {
         compressionLevel = Integer.parseInt(args[i].substring(1));
+      } else if (args[i].equals("-v")) {
+        verbose = true;
       } else if (args[i].contains("help") || args[i].contains("?")) {
         System.out.println("Compresses data from stdin and outputs the GZip-compressed bytes to stdout.");
         System.out.println("Compressed data may be decompressed with any GZip utility single-threaded, or use MiGz "
             + "to decompress it using multiple threads");
         System.out.println("Optional arguments:");
+        System.out.println(
+            "\t-v : display informational messages at start and end");
         System.out.println(
             "\t-t [thread count] : sets the number of threads to use (default = 2 * number of logical cores)");
         System.out.println(
@@ -45,9 +50,11 @@ public class MZip  {
     }
     // CHECKSTYLE:ON
 
-    System.err.println(
-        "Compressing stdin using " + threadCount + " threads, blocks of size " + blockSize + ", and compression level "
-            + compressionLevel);
+    if (verbose) {
+      System.err.println(
+          "Compressing stdin using " + threadCount + " threads, blocks of size " + blockSize + ", and compression level "
+              + compressionLevel);
+    }
 
     long startTime = System.nanoTime();
 
@@ -63,6 +70,8 @@ public class MZip  {
     mzos.close();
 
     double timeInSeconds = ((double) (System.nanoTime() - startTime)) / (1000 * 1000 * 1000);
-    System.err.println("Compression completed in " + timeInSeconds + " seconds");
+    if (verbose) {
+      System.err.println("Compression completed in " + timeInSeconds + " seconds");
+    }
   }
 }
